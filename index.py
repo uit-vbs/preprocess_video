@@ -1,0 +1,142 @@
+import argparse
+import os
+import glob
+import pickle
+from unittest.result import failfast
+
+import faiss
+import numpy as np
+import torch
+from tqdm.auto import tqdm
+
+import info
+
+
+def load_embeddings(embeddings_dir):
+    if os.path.exists(f'{embeddings_dir}/embeddings.pkl'):
+        with open(f'{embeddings_dir}/embeddings.pkl', 'rb') as f:
+            embeddings = pickle.load(f)
+    else:
+        embeddings = []
+        for embedding_file in tqdm(sorted(glob.glob(f"{embeddings_dir}/*.npz"))):
+            data = np.load(embedding_file)
+            embeddings.append(np.array(data.get("feature_lst")[:, 0, 0, :]).astype(np.float32))
+        embeddings = np.vstack(embeddings)
+        
+        with open(f'{embeddings_dir}/embeddings.pkl', 'wb') as f:
+            pickle.dump(embeddings, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+    print(f"Loaded embedding with shape: {embeddings.shape}")
+    return embeddings
+
+
+def set_nprobe(index, nprobe):
+    changed = False
+    if hasattr(index, "nprobe") and nprobe and index.nprobe != nprobe:
+        index.nprobe = nprobe
+        print(f"Set nprobe = {nprobe}")
+        changed = True
+    return changed
+
+
+def auto_nprobe(nlist):
+    nprobe = min(max(round(2e-3 * nlist), 128), nlist)
+    print(f"Automatic nprobe: {nprobe}")
+    return nprobe
+
+
+def auto_ivf_sq(nembeddings):
+    # refering to https://github.com/facebookresearch/faiss/wiki/Guidelines-to-choose-an-index
+    ncentroids = 0
+    if nembeddings <= 1e6:
+        ncentroids = int(np.ceil(16 * np.sqrt(nembeddings)))
+    elif 1e6 < nembeddings <= 10e6:
+        ncentroids = 65536
+    elif 10e6 < nembeddings <= 100e6:
+        ncentroids = 262144
+    elif 100e6 <= nembeddings <= 1e9:
+        ncentroids = 1048576
+    else:
+        raise ValueError(
+            "Too many embeddings! Please set the index factory string yourself"
+        )
+
+    ncentroids = min(nembeddings // 39, ncentroids)
+    index_factory_string = f"IVF{ncentroids},SQ4"
+    print(f"Automatic index factory string: {index_factory_string}")
+    return index_factory_string
+
+
+def run(
+    embeddings_dir,
+    output_dir,
+    index_factory_string=None,
+    distance="IP",
+    nprobe=None,
+    use_gpu=False,
+):
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"AIC_db_{distance}.index")
+    if not os.path.exists(output_path):
+        use_gpu = use_gpu and torch.cuda.is_available()
+        embeddings = load_embeddings(embeddings_dir)
+        ndim = embeddings.shape[1]
+        if len(embeddings) > 1e7:
+            print("WARNING: #embeddings > 10M, please use GPU(s) for saving time!!!")
+
+        if index_factory_string is None:
+            index_factory_string = auto_ivf_sq(len(embeddings))
+        if distance == "IP":
+            distance = faiss.METRIC_INNER_PRODUCT
+        elif distance == "L2":
+            distance = faiss.METRIC_L2
+        else:
+            raise NotImplementedError
+        index = faiss.index_factory(ndim, index_factory_string, distance)
+
+        if use_gpu:
+            ngpus = faiss.get_num_gpus()
+            print(f"Using {ngpus} gpus")
+            index = faiss.index_cpu_to_all_gpus(index)
+        else:
+            print("Using cpu")
+
+        index.train(embeddings)
+        index.add(embeddings)
+        if use_gpu:
+            index = faiss.index_gpu_to_cpu(index)
+
+        if nprobe is None and index.nlist:
+            nprobe = auto_nprobe(index.nlist)
+        set_nprobe(index, nprobe)
+        faiss.write_index(index, output_path)
+    else:
+        print("Found existing index")
+        index = faiss.read_index(output_path)
+        if set_nprobe(index, nprobe):
+            faiss.write_index(index, output_path)
+
+    info.run(output_dir, output_dir)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--embeddings_dir")
+    parser.add_argument("--output_dir")
+    parser.add_argument(
+        "--index_factory_string",
+        default=None,
+        help="By default, it will use IVFSQ index",
+    )
+    parser.add_argument("--distance", default="IP", choices=["L2", "IP"])
+    parser.add_argument(
+        "--nprobe",
+        type=int,
+        default=None,
+        help="How many clusters you want to dive in for each search. By default it will be 2e-3 * nlist",
+    )
+    parser.add_argument(
+        "--use_gpu", action="store_true", help="Please use GPU(s) if #embeddings >= 10M"
+    )
+    args = parser.parse_args()
+    run(**vars(args))

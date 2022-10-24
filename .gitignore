@@ -1,0 +1,16 @@
+__pycache__/
+
+weights/
+LAVIS/
+
+features/
+index_dir/
+index_dir_new/
+log_csv/
+
+*.mp4
+*.srt
+*.json 
+*.pth
+*.zip
+*.png 

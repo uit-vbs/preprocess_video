@@ -1,0 +1,23 @@
+#################   DETECTION CONFIG   ###################
+
+det_weight: "/app/vietnamese-ocr-toolbox/weights/PANNet_best_map.pth"
+det_config: "/app/vietnamese-ocr-toolbox/tool/config/detection/configs.yaml"
+
+#################   OCR CONFIG   ###################
+
+ocr_weight: "/app/vietnamese-ocr-toolbox/weights/transformerocr.pth"
+ocr_config: "/app/vietnamese-ocr-toolbox/tool/config/ocr/configs.yaml"
+
+#################   RETRIEVAL CONFIG   ###################
+
+retr_mode: "all"
+correction_mode: "ed"
+bert_weight: "/app/vietnamese-ocr-toolbox/weights/phobert_report.pth"
+dictionary_csv: "/app/vietnamese-ocr-toolbox/modules/retrieval/heuristic/custom-dictionary.csv"
+retr_classes: [
+  "SELLER",
+  "ADDRESS",
+  "TIMESTAMP",
+  "TOTAL_COST",
+  "NONE"
+]
